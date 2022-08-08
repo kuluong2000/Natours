@@ -29,34 +29,65 @@ const handleTokenExpiredError = (err) => {
   return new AppError('Your token has expired! Please login again.', 401);
 };
 
-const sendErrorDev = (err, res) => {
-  res.status(err.statusCode).json({
-    status: err.status,
-    error: err,
-    message: err.message,
-    stack: err.stack,
-  });
-};
-
-const sendErrorProd = (err, res) => {
-  // Operational, trusted error: send message to client
-  if (err.isOperational) {
-    res.status(err.statusCode).json({
+const sendErrorDev = (err, req, res) => {
+  // API
+  if (req.originalUrl.startsWith('/api')) {
+    return res.status(err.statusCode).json({
       status: err.status,
       error: err,
       message: err.message,
+      stack: err.stack,
     });
-
-    // Programming or other unknown error: don't leak error details
   } else {
-    // 1) Log error
-    console.error('ERROR 💥', err);
-
-    // 2) Send generic message
-    res.status(500).json({
-      status: 'error',
-      message: 'Something went very wrong!',
+    // RENDERED WEBSITE
+    return res.status(err.statusCode).render('errorPage', {
+      title: 'Something went wrong',
+      msg: err.message,
     });
+  }
+};
+
+const sendErrorProd = (err, req, res) => {
+  // API
+  if (req.originalUrl.startsWith('/api')) {
+    // Operational, trusted error: send message to client
+    if (err.isOperational) {
+      return res.status(err.statusCode).json({
+        status: err.status,
+        error: err,
+        message: err.message,
+      });
+
+      // Programming or other unknown error: don't leak error details
+    } else {
+      // 1) Log error
+      console.error('ERROR 💥', err);
+
+      // 2) Send generic message
+      return res.status(500).json({
+        status: 'error',
+        message: 'Something went very wrong!',
+      });
+    }
+  } else {
+    // RENDER WEBSITE
+    if (err.isOperational) {
+      return res.status(err.statusCode).render('errorPage', {
+        title: 'Something went wrong',
+        msg: err.message,
+      });
+
+      // Programming or other unknown error: don't leak error details
+    } else {
+      // 1) Log error
+      console.error('ERROR 💥', err);
+
+      // 2) Send generic message
+      return res.status(err.statusCode).render('errorPage', {
+        title: 'Something went wrong',
+        msg: 'Please try again later',
+      });
+    }
   }
 };
 
@@ -65,20 +96,19 @@ module.exports = (err, req, res, next) => {
   err.status = err.status || 'error';
 
   if (process.env.NODE_ENV === 'development') {
-    sendErrorDev(err, res);
+    sendErrorDev(err, req, res);
   } else if (process.env.NODE_ENV === 'production') {
     let error = { ...err };
-
+    error.message = err.message;
     if (error.name === 'CastError') error = handleCastErrorDB(error);
     if (error.code === 11000) error = handleDuplicateFieldsDB(error);
     if (error.name === 'validationError')
       error = handleValidationErrorDB(error);
     if (error.name === 'JsonWebTokenError')
       error = handleJsonWebTokenError(error);
-    console.log(error.name);
     if (error.name === 'TokenExpiredError')
       error = handleTokenExpiredError(error);
 
-    sendErrorProd(error, res);
+    sendErrorProd(error, req, res);
   }
 };

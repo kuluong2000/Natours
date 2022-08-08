@@ -1,10 +1,70 @@
 const fs = require('fs');
+const multer = require('multer');
+const sharp = require('sharp');
 const { nextTick } = require('process');
 const slugify = require('slugify');
 const Tour = require('../models/tourModel');
 const APIFeatures = require('../utils/apiFeatures');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
+const factory = require('./handlerFactory');
+
+exports.getAllTour = factory.getAll(Tour);
+exports.getTour = factory.getOne(Tour, { path: 'reviews' });
+exports.createTour = factory.createOne(Tour);
+exports.deleteTour = factory.deleteOne(Tour);
+exports.updateTour = factory.updateOne(Tour);
+
+const multerStorage = multer.memoryStorage();
+
+const multerFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith('image')) {
+    cb(null, true);
+  } else {
+    cb(new AppError('Not an image! Please upload only image', 400), false);
+  }
+};
+
+const upload = multer({
+  storage: multerStorage,
+  fileFilter: multerFilter,
+});
+
+exports.uploadTourImages = upload.fields([
+  { name: 'imageCover', maxCount: 1 },
+  { name: 'images', maxCount: 3 },
+]);
+
+// upload.single('image') req.file
+// upload.array('images', 5); req.files
+
+exports.resizeTourImages = catchAsync(async (req, res, next) => {
+  if (!req.files.imageCover || !req.files.images) return next();
+
+  // 1) Cover Image
+  req.body.imageCover = `tour-${req.params.id}-${Date.now()}-cover.jpeg`;
+  await sharp(req.files.imageCover[0].buffer)
+    .resize(2000, 1333)
+    .toFormat('jpeg')
+    .jpeg({ quality: 90 })
+    .toFile(`public/assets/image/tours/${req.body.imageCover}`);
+
+  // 2) Image
+  req.body.images = [];
+  await Promise.all(
+    req.files.images.map(async (file, i) => {
+      const filename = `tour-${req.params.id}-${Date.now()}-${i + 1}.jpeg`;
+      await sharp(file.buffer)
+        .resize(2000, 1333)
+        .toFormat('jpeg')
+        .jpeg({ quality: 90 })
+        .toFile(`public/assets/image/tours/${filename}`);
+
+      req.body.images.push(filename);
+    })
+  );
+  next();
+});
 exports.aliasTopTours = (req, res, next) => {
   req.query.limit = '5';
   req.query.sort = '-ratingsAverage,price';
@@ -12,92 +72,6 @@ exports.aliasTopTours = (req, res, next) => {
   next();
 };
 
-exports.getAllTour = catchAsync(async (req, res, next) => {
-  // EXECUTE QUERY
-  const features = new APIFeatures(Tour.find(), req.query)
-    .filter()
-    .sort()
-    .limitedFields()
-    .pagination();
-  const tours = await features.query;
-
-  //query.sort().select().skip().limit()
-
-  // SEND RESPONSE
-  res.status(200).json({
-    message: 'success',
-    result: tours.length,
-    data: {
-      tours,
-    },
-  });
-});
-
-exports.getTour = catchAsync(async (req, res, next) => {
-  //nếu req.params.id  mà rỗng khi nhân với 1 thì nó sẽ chuyển thành 1 -- trick of javascript
-  // const id = req.params.id;
-
-  // const tour = await Tour.findOne({ _id: id });
-  const tour = await Tour.findById(req.params.id);
-
-  if (!tour) {
-    return next(new AppError('No tour found with that ID', 404));
-  }
-  res.status(200).json({
-    message: 'success',
-    data: {
-      tour,
-    },
-  });
-});
-
-exports.createTour = catchAsync(async (req, res, next) => {
-  // const slugs = slugify(req.body.name && req.body.name, { lower: true });
-  // console.log(slugs);
-  // const newTour = await Tour.create(
-  //   Object.assign({ ...req.body, slugs: `${slugs}` })
-  // );
-  const newTour = await Tour.create(req.body);
-
-  res.status(201).json({
-    message: 'success',
-    data: {
-      tours: newTour,
-    },
-  });
-});
-
-exports.updateTour = catchAsync(async (req, res, next) => {
-  const slugs = slugify(req.body.name && req.body.name, { lower: true });
-  const tour = await Tour.findByIdAndUpdate(
-    req.params.id,
-    { ...req.body, slugs: slugs },
-    {
-      new: true,
-      runValidators: true,
-    }
-  );
-  if (!tour) {
-    return next(new AppError('No tour found with that ID', 404));
-  }
-  res.status(200).json({
-    status: 'success',
-    data: {
-      tour,
-    },
-  });
-});
-
-exports.deleteTour = catchAsync(async (req, res, next) => {
-  const tour = await Tour.deleteOne({ _id: req.params.id });
-  if (!tour) {
-    return next(new AppError('No tour found with that ID', 404));
-  }
-  res.status(204).json({
-    status: 'success',
-    data: null,
-  });
-});
 exports.getTourStats = catchAsync(async (req, res, next) => {
   /* 
     $match: chọn document mong muốn truy vấn.
@@ -179,6 +153,86 @@ exports.getMonthlyPlan = catchAsync(async (req, res, next) => {
     status: 'success',
     data: {
       plan,
+    },
+  });
+});
+// /tours-within/:distance/center/:latlng/unit/:unit
+// tours-within/400/center/34.111745,-118.113491/unit/mi
+
+exports.getToursWithin = catchAsync(async (req, res, next) => {
+  const { distance, latlng, unit } = req.params;
+  const [lat, lng] = latlng.split(',');
+  //lat = latitude: vĩ độ
+  //lng = longitude : kinh độ
+
+  //distance/3963.2:khoảng cách bán kính trái đất
+  //distance/6378.1: khoảng cách kilometers
+  const radius = unit === 'mi' ? distance / 3963.2 : distance / 6378.1;
+  if (!lat || !lng) {
+    next(
+      new AppError(
+        'Please provide latitude and longitude in the format  lat,lng',
+        400
+      )
+    );
+  }
+  /*
+    <location field>: {
+      $geoWithin: { $centerSphere: [ [ <x>, <y> ], <radius> ] }
+   }
+  -$geoWithin: Chọn tài liệu có dữ liệu không gian địa lý tồn tại hoàn toàn trong một hình dạng cụ thể
+  -$centerSphere: Xác định vòng tròn cho truy vấn không gian địa lý sử dụng hình cầu.
+                 Truy vấn trả về các tài liệu nằm trong giới hạn của vòng kết nối
+  */
+  const tours = await Tour.find({
+    startLocation: { $geoWithin: { $centerSphere: [[lng, lat], radius] } },
+  });
+  res.status(200).json({
+    status: 'success',
+    results: tours.length,
+    data: {
+      data: tours,
+    },
+  });
+});
+
+exports.getDistances = catchAsync(async (req, res, next) => {
+  const { latlng, unit } = req.params;
+  const [lat, lng] = latlng.split(',');
+  // 1meter = 0.000621371 mi(dặm)
+  const multiplier = unit === 'mi' ? 0.000621371 : 0.001;
+  if (!lat || !lng) {
+    next(
+      new AppError(
+        'Please provide latitude and longitude in the format lat,lng',
+        400
+      )
+    );
+  }
+  const distances = await Tour.aggregate([
+    {
+      // geoNear: Xuất tài liệu theo thứ tự từ gần nhất đến xa nhất từ ​​một điểm xác định.
+      $geoNear: {
+        near: {
+          type: 'Point',
+          coordinates: [lng * 1, lat * 1],
+        },
+        distanceField: 'distance', // tạo một 'distance' for distanceField
+        distanceMultiplier: multiplier, // chuyển distance về KM thì gõ 0.001 tương ứng với chia 1000
+      },
+    },
+    {
+      $project: {
+        distance: 1,
+        name: 1,
+      },
+    },
+  ]);
+  res.status(200).json({
+    status: 'success',
+    result: distances.length,
+    data: {
+      data: distances,
     },
   });
 });
