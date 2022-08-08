@@ -25,7 +25,7 @@ export const displayMap = (locations) => {
     })
       .setLngLat(loc.coordinates)
       .addTo(map);
-    console.log(loc.coordinates);
+    // console.log(loc.coordinates);
     // Add popup
 
     new mapboxgl.Popup({

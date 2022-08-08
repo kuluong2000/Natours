@@ -40,7 +40,7 @@ const createSendToken = (user, statusCode, res) => {
 exports.signup = catchAsync(async (req, res, next) => {
   const newUser = await User.create(req.body);
   const url = `${req.protocol}://${req.get('host')}/me`;
-  console.log(url);
+  // console.log(url);
   await new Email(newUser, url).sendWelcome();
   createSendToken(newUser, 201, res);
   //jwt.sign(payload, secretOrPrivateKey, [options, callback])
@@ -60,7 +60,7 @@ exports.login = catchAsync(async (req, res, next) => {
   }
   const correct = await user.correctPassword(password, user.password); // trả về true or false
 
-  console.log(correct);
+  // console.log(correct);
   if (!user || !correct) {
     return next(new AppError('Incorrect email or password', 401));
   }
